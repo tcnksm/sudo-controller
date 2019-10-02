@@ -1,3 +1,7 @@
 version: "2"
 domain: deeeet.com
 repo: github.com/tcnksm/sudo-controller
+resources:
+- group: sudocontroller
+  version: v1
+  kind: TemporaryClusterRoleBinding

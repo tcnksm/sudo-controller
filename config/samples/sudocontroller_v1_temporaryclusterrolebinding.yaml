@@ -1,0 +1,7 @@
+apiVersion: sudocontroller.deeeet.com/v1
+kind: TemporaryClusterRoleBinding
+metadata:
+  name: temporaryclusterrolebinding-sample
+spec:
+  # Add fields here
+  foo: bar

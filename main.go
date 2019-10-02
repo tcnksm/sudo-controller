@@ -19,6 +19,8 @@ import (
 	"flag"
 	"os"
 
+	sudocontrollerv1 "github.com/tcnksm/sudo-controller/api/v1"
+	"github.com/tcnksm/sudo-controller/controllers"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -35,6 +37,7 @@ var (
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
+	_ = sudocontrollerv1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -59,6 +62,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controllers.TemporaryClusterRoleBindingReconciler{
+		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("TemporaryClusterRoleBinding"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "TemporaryClusterRoleBinding")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	setupLog.Info("starting manager")
