@@ -1,0 +1,14 @@
+apiVersion: sudocontroller.deeeet.com/v1
+kind: TemporaryClusterRoleBinding
+metadata:
+  name: tcnksm-is-temporary-admin
+ttlSeconds: 600
+approver: cluster-role-binding-approver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: tcnksm@mercari.com
