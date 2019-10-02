@@ -17,6 +17,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-logr/logr"
 	sudocontrollerv1 "github.com/tcnksm/sudo-controller/api/v1"
@@ -31,7 +32,8 @@ import (
 type TemporaryClusterRoleBindingReconciler struct {
 	client.Client
 	Log    logr.Logger
-	scheme *runtime.Scheme
+	Scheme *runtime.Scheme
+	Clock
 }
 
 // +kubebuilder:rbac:groups=sudocontroller.deeeet.com,resources=temporaryclusterrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -52,7 +54,7 @@ func (r *TemporaryClusterRoleBindingReconciler) Reconcile(req ctrl.Request) (ctr
 	logger := r.Log.WithValues("temporaryclusterrolebinding", req.NamespacedName)
 
 	var temporaryClusterRoleBinding sudocontrollerv1.TemporaryClusterRoleBinding
-	logger.V(1).Info("get temporaryclusterrolebinding")
+	logger.V(0).Info("get temporaryclusterrolebinding")
 	if err := r.Get(ctx, req.NamespacedName, &temporaryClusterRoleBinding); err != nil {
 		if !apierrs.IsNotFound(err) {
 			logger.Error(err, "unable to fetch TemporaryClusterRoleBinding")
@@ -63,7 +65,7 @@ func (r *TemporaryClusterRoleBindingReconciler) Reconcile(req ctrl.Request) (ctr
 
 	var clusterRoleBinding rbacv1.ClusterRoleBinding
 	bindingFound := true
-	logger.V(1).Info("get clusterrolebinding")
+	logger.V(0).Info("get clusterrolebinding")
 	if err := r.Get(ctx, req.NamespacedName, &clusterRoleBinding); err != nil {
 		if !apierrs.IsNotFound(err) {
 			logger.Error(err, "unable to fetch ClusterRoleBinding")
@@ -73,54 +75,89 @@ func (r *TemporaryClusterRoleBindingReconciler) Reconcile(req ctrl.Request) (ctr
 	}
 
 	if bindingFound {
-		// annotations := clusterRoleBinding.Annotations
-		// expiredAt, ok := annotations["expiredAt"]
+		logger.V(0).Info("check ClusterRoleBinding expiration")
+		annotations := clusterRoleBinding.Annotations
+		expiredAtStr, ok := annotations["expiredAt"]
+		if !ok {
+			return ctrl.Result{}, nil
+		}
+
+		expiredAt, err := time.Parse(time.RFC3339, expiredAtStr)
+		if err != nil {
+			logger.Error(err, "failed to parse expiredAt string to Time")
+			return ctrl.Result{}, err
+		}
+
+		if r.Clock.Now().After(expiredAt) {
+			logger.V(0).Info("delete TemporaryClusterRoleBinding")
+			if err := r.Delete(ctx, &temporaryClusterRoleBinding); err != nil {
+				logger.Error(err, "unable to delete TemporaryClusterRoleBinding")
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
 	// TODO(tcnksm): Add approvement process
 
 	// Create ClusterRoleBinding
+
+	expiredAfter, err := time.ParseDuration(temporaryClusterRoleBinding.TTL)
+	if err != nil {
+		logger.Error(err, "failed to parse TTL")
+		return ctrl.Result{}, err
+	}
+
 	templ := temporaryClusterRoleBinding.DeepCopy()
+
 	clusterRoleBinding.Name = req.Name
 	clusterRoleBinding.Namespace = req.Namespace
-	clusterRoleBinding.Annotations = map[string]string{
-		"expiredAt": "Yo",
-	}
+
 	clusterRoleBinding.Subjects = templ.Subjects
 	clusterRoleBinding.RoleRef = templ.RoleRef
+
+	expiredAt := r.Clock.Now().Add(expiredAfter)
+	clusterRoleBinding.Annotations = map[string]string{
+		"expiredAt": expiredAt.Format(time.RFC3339),
+	}
 
 	// SetControllerReference sets owner as a Controller OwnerReference on owned.
 	// This is used for garbage collection of the owned object and for reconciling
 	// the owner object on changes to owned (with a Watch + EnqueueRequestForOwner).
 	// Since only one OwnerReference can be a controller, it returns an error
 	// if there is another OwnerReference with Controller flag set.
-	logger.V(1).Info("set controller references")
-	if err := ctrl.SetControllerReference(&temporaryClusterRoleBinding, &clusterRoleBinding, r.scheme); err != nil {
+	logger.V(0).Info("set controller references")
+	if err := ctrl.SetControllerReference(&temporaryClusterRoleBinding, &clusterRoleBinding, r.Scheme); err != nil {
 		logger.Error(err, "unable to set clusterrolebinding owner reference")
 		return ctrl.Result{}, err
 	}
 
-	logger.V(1).Info("create clusterrolebinding")
+	logger.V(0).Info("create clusterrolebinding")
 	if err := r.Create(ctx, &clusterRoleBinding); err != nil {
 		logger.Error(err, "unable to create ClusterRoleBinding")
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{
+		RequeueAfter: expiredAfter,
+	}, nil
 }
 
 func (r *TemporaryClusterRoleBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.scheme = mgr.GetScheme()
+	r.Scheme = mgr.GetScheme()
+	r.Clock = &realClock{}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sudocontrollerv1.TemporaryClusterRoleBinding{}).
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Complete(r)
 }
 
-func ignoreNotFound(err error) error {
-	if apierrs.IsNotFound(err) {
-		return nil
-	}
-	return err
+type realClock struct{}
+
+func (_ realClock) Now() time.Time { return time.Now() }
+
+// clock knows how to get the current time.
+// It can be used to fake out timing for testing.
+type Clock interface {
+	Now() time.Time
 }

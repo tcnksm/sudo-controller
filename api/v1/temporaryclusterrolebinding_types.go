@@ -30,7 +30,7 @@ type TemporaryClusterRoleBinding struct {
 
 	// TTL is expiration time of temporary ClusterRoleBinding
 	// +optional
-	TTL metav1.Time `json:"ttl,omitempty"`
+	TTL string `json:"ttl,omitempty"`
 
 	// Approver is an approver of ClusterRoleBinding
 	Approver string `json:"approver,omitempty"`

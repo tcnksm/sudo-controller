@@ -84,7 +84,6 @@ spec:
           type: array
         ttl:
           description: TTL is expiration time of temporary ClusterRoleBinding
-          format: date-time
           type: string
       type: object
   version: v1

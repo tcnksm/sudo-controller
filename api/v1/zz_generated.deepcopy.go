@@ -29,7 +29,6 @@ func (in *TemporaryClusterRoleBinding) DeepCopyInto(out *TemporaryClusterRoleBin
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	in.TTL.DeepCopyInto(&out.TTL)
 	if in.Subjects != nil {
 		in, out := &in.Subjects, &out.Subjects
 		*out = make([]rbacv1.Subject, len(*in))
