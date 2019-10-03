@@ -17,13 +17,17 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/go-logr/logr"
 	sudocontrollerv1 "github.com/tcnksm/sudo-controller/api/v1"
+	"github.com/tcnksm/sudo-controller/notify"
+	"github.com/tcnksm/sudo-controller/slack"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -31,8 +35,10 @@ import (
 // TemporaryClusterRoleBindingReconciler reconciles a TemporaryClusterRoleBinding object
 type TemporaryClusterRoleBindingReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	SlackClient   slack.Slack
+	ApprovementCh chan notify.Approvement
+	Log           logr.Logger
+	Scheme        *runtime.Scheme
 	Clock
 }
 
@@ -98,9 +104,52 @@ func (r *TemporaryClusterRoleBindingReconciler) Reconcile(req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	// TODO(tcnksm): Add approvement process
+	// Ask aprovement
+	if len(temporaryClusterRoleBinding.Subjects) > 1 {
+		err := errors.New("invalid request")
+		logger.Error(err, "only one subject can be binded")
+		return ctrl.Result{}, err
+	}
 
-	// Create ClusterRoleBinding
+	// Get approvers
+	var clusterApprover sudocontrollerv1.ClusterApprover
+	logger.V(0).Info("get temporaryclusterrolebinding")
+	if err := r.Get(ctx, types.NamespacedName{Name: temporaryClusterRoleBinding.Approver}, &clusterApprover); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	slackChannelID := clusterApprover.Spec.ChannelID
+	approver := clusterApprover.Spec.ApproverIDs[0]
+	applicant := temporaryClusterRoleBinding.Subjects[0].Name
+	role := temporaryClusterRoleBinding.RoleRef.Name
+	cluster := "gke_mercari-p-tcnksm_asia-northeast1-a_tcnksm-playground" // TODO(tcnksm): Get this dynamically
+	if err := r.SlackClient.AskApprovement(req.Name, slackChannelID, approver, applicant, role, cluster); err != nil {
+		logger.Error(err, "failed to ask approvement on slack")
+		return ctrl.Result{}, err
+	}
+
+	var approvement notify.Approvement
+Loop:
+	for {
+		select {
+		case approvement = <-r.ApprovementCh:
+			if approvement.Name != req.Name {
+				r.ApprovementCh <- approvement
+				<-time.After(1 * time.Second)
+				break
+			}
+			break Loop
+		}
+	}
+
+	// If it's not approved, delete temporary role binding itself
+	if !approvement.Approve {
+		if err := r.Delete(ctx, &temporaryClusterRoleBinding); err != nil {
+			logger.Error(err, "unable to delete TemporaryClusterRoleBinding")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
 	expiredAfter, err := time.ParseDuration(temporaryClusterRoleBinding.TTL)
 	if err != nil {
