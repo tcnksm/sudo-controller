@@ -17,10 +17,15 @@ package main
 
 import (
 	"flag"
+	"net/http"
 	"os"
 
+	"github.com/kelseyhightower/envconfig"
+	"github.com/nlopes/slack"
 	sudocontrollerv1 "github.com/tcnksm/sudo-controller/api/v1"
 	"github.com/tcnksm/sudo-controller/controllers"
+	"github.com/tcnksm/sudo-controller/notify"
+	sslack "github.com/tcnksm/sudo-controller/slack"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -33,6 +38,17 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+type envConfig struct {
+	// Port is server port to be listened.
+	Port string `envconfig:"PORT" default:"3000"`
+
+	// BotToken is bot user token to access to slack API.
+	BotToken string `envconfig:"BOT_TOKEN" required:"true"`
+
+	// VerificationToken is used to validate interactive messages from slack.
+	VerificationToken string `envconfig:"VERIFICATION_TOKEN" required:"true"`
+}
 
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -51,6 +67,32 @@ func main() {
 
 	ctrl.SetLogger(zap.Logger(true))
 
+	var env envConfig
+	if err := envconfig.Process("", &env); err != nil {
+		setupLog.Error(err, "unable to process env vars")
+		os.Exit(1)
+	}
+
+	approvementCh := make(chan notify.Approvement)
+
+	// Register handler to receive interactive message
+	// responses from slack (kicked by user action)
+	http.Handle("/interaction", sslack.InteractionHandler{
+		VerificationToken: env.VerificationToken,
+		ApprovementCh:     approvementCh,
+	})
+	go func() {
+		if err := http.ListenAndServe(":"+env.Port, nil); err != nil {
+			setupLog.Error(err, "unable to start server")
+			os.Exit(1)
+		}
+	}()
+
+	client := slack.New(env.BotToken)
+	slackClient := sslack.Slack{
+		Client: client,
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
 		MetricsBindAddress: metricsAddr,
@@ -62,9 +104,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	logger := ctrl.Log.WithName("controllers").WithName("TemporaryClusterRoleBinding")
 	if err = (&controllers.TemporaryClusterRoleBindingReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("TemporaryClusterRoleBinding"),
+		Client:        mgr.GetClient(),
+		SlackClient:   slackClient,
+		ApprovementCh: approvementCh,
+		Log:           logger,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TemporaryClusterRoleBinding")
 		os.Exit(1)
